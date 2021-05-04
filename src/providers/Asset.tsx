@@ -7,7 +7,7 @@ import React, {
   useCallback,
   ReactNode
 } from 'react'
-import { Logger, DDO, BestPrice } from '@oceanprotocol/lib'
+import { Logger, DDO, BestPrice, MetadataMain } from '@oceanprotocol/lib'
 import { PurgatoryData } from '@oceanprotocol/lib/dist/node/ddo/interfaces/PurgatoryData'
 import getAssetPurgatoryData from '../utils/purgatory'
 import axios, { CancelToken } from 'axios'
@@ -27,6 +27,7 @@ interface AssetProviderValue {
   title: string | undefined
   owner: string | undefined
   price: BestPrice | undefined
+  type: MetadataMain['type'] | undefined
   error?: string
   refreshInterval: number
   refreshDdo: (token?: CancelToken) => Promise<void>
@@ -36,6 +37,9 @@ const poolQuery = gql`
   query PoolPrice($datatoken: String) {
     pools(where: { datatokenAddress: $datatoken }) {
       spotPrice
+      consumePrice
+      datatokenReserve
+      oceanReserve
     }
   }
 `
@@ -44,6 +48,7 @@ const freQuery = gql`
   query FrePrice($datatoken: String) {
     fixedRateExchanges(orderBy: id, where: { datatoken: $datatoken }) {
       rate
+      id
     }
   }
 `
@@ -69,15 +74,17 @@ function AssetProvider({
   const [price, setPrice] = useState<BestPrice>()
   const [owner, setOwner] = useState<string>()
   const [error, setError] = useState<string>()
+  const [type, setType] = useState<MetadataMain['type']>()
   const [variables, setVariables] = useState({})
 
+  /* eslint-disable @typescript-eslint/no-unused-vars */
   const {
     refetch: refetchFre,
     startPolling: startPollingFre,
     data: frePrice
   } = useQuery<FrePrice>(freQuery, {
     variables,
-    skip: true
+    skip: false
   })
   const {
     refetch: refetchPool,
@@ -85,31 +92,50 @@ function AssetProvider({
     data: poolPrice
   } = useQuery<PoolPrice>(poolQuery, {
     variables,
-    skip: true
+    skip: false
   })
+  /* eslint-enable @typescript-eslint/no-unused-vars */
+
+  // this is not working as expected, thus we need to fetch both pool and fre
+  // useEffect(() => {
+  //   if (!ddo || !variables || variables === '') return
+
+  //   if (ddo.price.type === 'exchange') {
+  //     refetchFre(variables)
+  //     startPollingFre(refreshInterval)
+  //   } else {
+  //     refetchPool(variables)
+  //     startPollingPool(refreshInterval)
+  //   }
+  // }, [ddo, variables])
 
   useEffect(() => {
-    if (!ddo || !variables) return
-    if (ddo.price.type === 'exchange') {
-      refetchFre(variables)
-      startPollingFre(refreshInterval)
-    } else {
-      refetchPool(variables)
-      startPollingPool(refreshInterval)
-    }
-  }, [ddo, variables])
-
-  useEffect(() => {
-    if (!frePrice || frePrice.fixedRateExchanges.length === 0) return
-    price.value = frePrice.fixedRateExchanges[0].rate
-    setPrice(price)
+    if (
+      !frePrice ||
+      frePrice.fixedRateExchanges.length === 0 ||
+      price.type !== 'exchange'
+    )
+      return
+    setPrice((prevState) => ({
+      ...prevState,
+      value: frePrice.fixedRateExchanges[0].rate,
+      address: frePrice.fixedRateExchanges[0].id
+    }))
   }, [frePrice])
 
   useEffect(() => {
-    if (!poolPrice || poolPrice.pools.length === 0) return
-    price.value = poolPrice.pools[0].spotPrice
-    price.value = 3222222
-    setPrice(price)
+    if (!poolPrice || poolPrice.pools.length === 0 || price.type !== 'pool')
+      return
+    setPrice((prevState) => ({
+      ...prevState,
+      value:
+        poolPrice.pools[0].consumePrice === '-1'
+          ? poolPrice.pools[0].spotPrice
+          : poolPrice.pools[0].consumePrice,
+      ocean: poolPrice.pools[0].oceanReserve,
+      datatoken: poolPrice.pools[0].datatokenReserve,
+      isConsumable: poolPrice.pools[0].consumePrice === '-1' ? 'false' : 'true'
+    }))
   }, [poolPrice])
 
   const fetchDdo = async (token?: CancelToken) => {
@@ -176,13 +202,15 @@ function AssetProvider({
     if (!ddo) return
 
     // Set price & metadata from DDO first
-    setPrice(ddo.price)
+    // TODO Hacky hack, temporary™: set isConsumable to true by default since Aquarius can't be trusted.
+    setPrice({ ...ddo.price, isConsumable: 'true' })
     setVariables({ datatoken: ddo?.dataToken.toLowerCase() })
 
     // Get metadata from DDO
     const { attributes } = ddo.findServiceByType('metadata')
     setMetadata((attributes as unknown) as MetadataMarket)
     setTitle(attributes?.main.name)
+    setType(attributes.main.type)
     setOwner(ddo.publicKey[0].owner)
     Logger.log('[asset] Got Metadata from DDO', attributes)
 
@@ -205,6 +233,7 @@ function AssetProvider({
           title,
           owner,
           price,
+          type,
           error,
           isInPurgatory,
           purgatoryData,

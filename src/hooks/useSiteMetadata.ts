@@ -13,15 +13,22 @@ const query = graphql`
           name
           link
         }
-        warning
-        warningPolygon
-        warningPolygonPublish
+        warning {
+          main
+          polygonPublish
+        }
+        announcement {
+          main
+          polygon
+        }
         appConfig {
           infuraProjectId
           network
           marketFeeAddress
           currencies
           portisId
+          allowFixedPricing
+          allowDynamicPricing
         }
       }
     }
